@@ -1,0 +1,7 @@
+streamlit
+tensorflow
+opencv-python-headless
+numpy
+librosa
+moviepy
+kaggle
