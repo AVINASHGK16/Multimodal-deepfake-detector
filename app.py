@@ -6,7 +6,35 @@ from preprocess_video import extract_face_pipeline
 from preprocess_audio import get_mel_spectrogram
 from explainability import generate_gradcam_heatmap 
 from model_fusion import build_fusion_model 
+def apply_custom_css():
+    st.markdown(
+        """
+        <style>
+        #MainMenu {visibility: hidden;} /* Hides the hamburger menu */
+        footer {visibility: hidden;} /* Hides the Streamlit footer */
+        header {visibility: hidden;} /* Hides the top header bar */
+        
+        /* Make the main container wider and more readable */
+        .block-container {
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            max-width: 1000px;
+        }
+        
+        /* Style the upload box to look more clickable */
+        .stFileUploader {
+            background-color: #1E212B;
+            border-radius: 10px;
+            padding: 15px;
+            border: 1px dashed #00F0FF;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
+# Call it right below your imports
+apply_custom_css()
 # --- Model Loading with Caching ---
 # @st.cache_resource ensures the model is only built and loaded into RAM once! 
 @st.cache_resource
