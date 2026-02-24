@@ -13,7 +13,7 @@ from model_fusion import build_fusion_model
 def load_detector_model():
     model = build_fusion_model()
     try:
-        model.load_weights("detector_weights_test.weights.h5")
+        model.load_weights("final_detector_weights.weights.h5")
         return model
     except Exception as e:
         st.warning(f"Could not load weights. Make sure 'detector_weights_test.weights.h5' is in the folder. Error: {e}")
