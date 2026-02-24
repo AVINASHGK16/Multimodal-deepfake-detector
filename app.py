@@ -66,6 +66,8 @@ def display_results(original_img, heatmap):
     with col2:
         st.image(superimposed_rgb, caption="Detection Heatmap (XAI)", channels="RGB")
 
+        
+
 # --- Main App ---
 st.title("🛡️ Multimodal Deepfake & Synthetic Media Detector")
 st.markdown("Analyzing audiovisual inconsistencies with Explainable AI.")
@@ -130,3 +132,44 @@ if uploaded_file is not None:
             
     else:
         st.error("No faces detected in the uploaded video. Please upload a video with a clear human subject.")
+
+   st.title("🛡️ Multimodal Deepfake Detector")
+st.markdown("### Protect yourself from synthetic media with AI-driven analysis.")
+
+# Create clean navigation tabs
+tab1, tab2, tab3 = st.tabs(["🔍 Analyze Media", "🧠 How it Works", "ℹ️ About the Project"])
+
+with tab1:
+    uploaded_file = st.file_uploader("Upload a video (.mp4, .mov, .avi)", type=["mp4", "mov", "avi"])
+
+    if uploaded_file is not None:
+        # The new, aesthetic loading spinner
+        with st.status("Analyzing audiovisual data...", expanded=True) as status:
+            st.write("Extracting facial frames...")
+            # -> Put your extract_face_pipeline() code here
+            
+            st.write("Generating Mel-spectrograms...")
+            # -> Put your get_mel_spectrogram() code here
+            
+            st.write("Running dual-stream neural network...")
+            # -> Put your detector.predict() code here
+            
+            status.update(label="Analysis Complete!", state="complete", expanded=False)
+        
+        # Display Results clearly
+        st.divider() # Adds a nice horizontal line
+        
+        # -> Put your prediction logic and display_results() (Grad-CAM) here
+
+with tab2:
+    st.header("The Architecture")
+    st.markdown("""
+    This detector uses a **Dual-Stream Architecture**:
+    * **Visual Stream (Eyes):** An Xception CNN scans spatial artifacts in faces.
+    * **Audio Stream (Ears):** An LSTM network tracks temporal inconsistencies in voice.
+    * **XAI:** Grad-CAM highlights the exact pixels that triggered the fake detection.
+    """)
+    # You could even add an architecture image here later!
+
+# with tab3:
+#     st.info("Developed by Avinash G.K. as part of a B.Tech CSE (AIML) capstone initiative.") 
