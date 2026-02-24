@@ -1,4 +1,3 @@
-# Multimodal-deepfake-detector
 # 🛡️ Multimodal Deepfake & Synthetic Media Detector
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue)
