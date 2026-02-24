@@ -1,0 +1,10 @@
+[theme]
+# A modern, high-contrast dark theme
+primaryColor = "#00F0FF" # Cyber-blue for buttons and highlights
+backgroundColor = "#0E1117" # Deep dark background
+secondaryBackgroundColor = "#1E212B" # Slightly lighter panels
+textColor = "#E0E0E0"
+font = "sans serif"
+
+[server]
+runOnSave = true
