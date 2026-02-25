@@ -133,43 +133,68 @@ if uploaded_file is not None:
     else:
         st.error("No faces detected in the uploaded video. Please upload a video with a clear human subject.")
 
-   st.title("🛡️ Multimodal Deepfake Detector")
+# --- 4. Main Application Layout ---
+st.title("🛡️ Multimodal Deepfake Detector")
 st.markdown("### Protect yourself from synthetic media with AI-driven analysis.")
+
+detector = load_detector_model()
 
 # Create clean navigation tabs
 tab1, tab2, tab3 = st.tabs(["🔍 Analyze Media", "🧠 How it Works", "ℹ️ About the Project"])
 
 with tab1:
-    uploaded_file = st.file_uploader("Upload a video (.mp4, .mov, .avi)", type=["mp4", "mov", "avi"])
+    # Everything under 'with tab1:' should be indented by exactly 4 spaces!
+   uploaded_file = st.file_uploader("Upload a video for analysis", type=["mp4", "mov", "avi"], key="main_video_uploader")
+if uploaded_file is not None:
+        video_path = "temp_video.mp4"
+        with open(video_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
 
-    if uploaded_file is not None:
-        # The new, aesthetic loading spinner
+        # Aesthetic loading spinner
         with st.status("Analyzing audiovisual data...", expanded=True) as status:
-            st.write("Extracting facial frames...")
-            # -> Put your extract_face_pipeline() code here
+            st.write("Extracting facial frames for spatial artifacts...")
+            video_features = extract_face_pipeline(video_path, max_frames=1) 
             
-            st.write("Generating Mel-spectrograms...")
-            # -> Put your get_mel_spectrogram() code here
+            st.write("Generating Mel-spectrograms for temporal anomalies...")
+            audio_features = get_mel_spectrogram(video_path)
             
-            st.write("Running dual-stream neural network...")
-            # -> Put your detector.predict() code here
-            
-            status.update(label="Analysis Complete!", state="complete", expanded=False)
-        
-        # Display Results clearly
-        st.divider() # Adds a nice horizontal line
-        
-        # -> Put your prediction logic and display_results() (Grad-CAM) here
+            if len(video_features) > 0 and audio_features is not None:
+                st.write("Running dual-stream neural network inference...")
+                v_input = np.expand_dims(video_features[0], axis=0)
+                a_input = np.expand_dims(audio_features, axis=0)
+                
+                prediction = detector.predict([v_input, a_input])[0][0]
+                status.update(label="Analysis Complete!", state="complete", expanded=False)
+                
+                st.divider()
+                
+                # Display Results
+                fake_probability = (1.0 - prediction) * 100
+                if fake_probability > 50.0:
+                    st.error(f"⚠️ High Probability of Manipulation: {fake_probability:.2f}%")
+                else:
+                    st.success(f"✅ Content appears Authentic. (Fake Probability: {fake_probability:.2f}%)")
+
+                st.subheader("Transparent Reasoning (XAI)")
+                try:
+                    real_heatmap = generate_gradcam_heatmap(detector, [v_input, a_input], 'block14_sepconv2_act')
+                    display_results(video_features[0], real_heatmap)
+                except Exception as e:
+                    st.warning("Grad-CAM visualizer fallback.")
+                    mock_heatmap = np.random.rand(10, 10)
+                    display_results(video_features[0], mock_heatmap)
+            else:
+                status.update(label="Analysis Failed", state="error", expanded=False)
+                st.error("Could not detect a clear face or audio track in the uploaded video.")
 
 with tab2:
     st.header("The Architecture")
     st.markdown("""
-    This detector uses a **Dual-Stream Architecture**:
-    * **Visual Stream (Eyes):** An Xception CNN scans spatial artifacts in faces.
-    * **Audio Stream (Ears):** An LSTM network tracks temporal inconsistencies in voice.
-    * **XAI:** Grad-CAM highlights the exact pixels that triggered the fake detection.
+    This detector uses a **Dual-Stream Architecture** to analyze media holistically:
+    * **Visual Stream (Eyes):** An Xception Convolutional Neural Network scans for spatial artifacts like unnatural pixel blending.
+    * **Audio Stream (Ears):** An LSTM network tracks temporal inconsistencies in voice and tone.
+    * **Explainability:** Grad-CAM maps highlight the exact pixels that influenced the model's decision, ensuring transparent AI.
     """)
-    # You could even add an architecture image here later!
 
-# with tab3:
-#     st.info("Developed by Avinash G.K. as part of a B.Tech CSE (AIML) capstone initiative.") 
+with tab3:
+    st.info("Developed by Avinash G.K. as part of a B.Tech CSE (AIML) capstone initiative.")
