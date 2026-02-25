@@ -197,4 +197,27 @@ with tab2:
     """)
 
 with tab3:
-    st.info("Developed by Avinash G.K. as part of a B.Tech CSE (AIML) capstone initiative.")
+    st.header("ℹ️ About the Project")
+    st.markdown("""
+    **Project Name:** AI-Powered Multimodal Deepfake & Synthetic Media Detector  
+    **Version:** 1.0 (Phase 1 Prototype)
+
+
+    ### 🛠️ Technology Stack
+    * **Deep Learning Framework:** TensorFlow & Keras
+    * **Computer Vision:** OpenCV (Haar Cascades for facial extraction)
+    * **Audio Processing:** Librosa & MoviePy (Mel-spectrogram generation)
+    * **Frontend/UI:** Streamlit
+    * **Cloud Infrastructure:** Kaggle Dual T4 GPUs (for neural network training)
+
+    ### 🎯 Project Mission
+    As Generative AI becomes more accessible, the threat of malicious synthetic media and deepfakes grows exponentially. Traditional detection systems that rely solely on visual cues are easily fooled by modern face-swapping algorithms. 
+    
+    This project was engineered to explore how **Multimodal Machine Learning**—teaching an AI to simultaneously "see" spatial artifacts and "hear" temporal audio anomalies—can be utilized to restore trust in digital media.
+
+    ### 🚀 Future Roadmap
+    Currently operating as a functional prototype, the immediate next steps for this capstone initiative include:
+    * **Model Fine-Tuning:** Unfreezing the Xception network to train specifically on deepfake-induced pixel warping.
+    * **Temporal Expansion:** Implementing `TimeDistributed` layers to analyze sequences of 10+ frames simultaneously to catch inter-frame glitches.
+    * **Dataset Migration:** Transitioning to the FakeAVCeleb dataset to robustly train the audio LSTM on synthesized AI voice clones.
+    """)
