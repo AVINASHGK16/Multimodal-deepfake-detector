@@ -39,10 +39,11 @@ apply_custom_css()
 def load_detector_model():
     model = build_fusion_model()
     try:
-        model.load_weights("final_detector_weights.weights.h5")
+        # POINT TO THE NEW DUMMY WEIGHTS HERE:
+        model.load_weights("dummy_phase2.weights.h5") 
         return model
     except Exception as e:
-        st.warning(f"Could not load weights. Make sure 'final_detector_weights.weights.h5' is in the folder. Error: {e}")
+        st.warning(f"Could not load weights. Error: {e}")
         return model
 
 # --- UI Layout Function ---
@@ -88,37 +89,83 @@ with tab1:
             video_features = extract_face_pipeline(video_path, max_frames=1) 
             
             st.write("Generating Mel-spectrograms for temporal anomalies...")
-            audio_features = get_mel_spectrogram(video_path)
+            raw_audio_features = get_mel_spectrogram(video_path)
             
-            if len(video_features) > 0 and audio_features is not None:
+            if len(video_features) > 0 and raw_audio_features is not None:
                 st.write("Running dual-stream neural network inference...")
+                
+                # --- AUDIO TENSOR FIX START ---
+                # 0. Squeeze the array to ensure it is strictly 2D (128, time_steps)
+                audio_2d = np.squeeze(raw_audio_features)
+                
+                # 1. Pad or truncate the time axis to ensure it is exactly 128
+                target_time_steps = 128
+                current_time_steps = audio_2d.shape[1] # Now this correctly points to the time axis
+                
+                if current_time_steps < target_time_steps:
+                    # Pad the end with zeros (silence)
+                    pad_width = target_time_steps - current_time_steps
+                    audio_features = np.pad(audio_2d, ((0, 0), (0, pad_width)), mode='constant')
+                else:
+                    # Truncate if it's too long
+                    audio_features = audio_2d[:, :target_time_steps]
+                
+                # 2. Add the missing channel dimension (128, 128) -> (128, 128, 1)
+                audio_features = np.expand_dims(audio_features, axis=-1)
+                # --- AUDIO TENSOR FIX END ---
+
+                # Prepare the final batch dimensions for the model
                 v_input = np.expand_dims(video_features[0], axis=0)
                 a_input = np.expand_dims(audio_features, axis=0)
                 
-                prediction = detector.predict([v_input, a_input])[0][0]
+                # 1. Get the predictions from our new 3-output architecture
+                predictions = detector.predict([v_input, a_input])
+                v_score = predictions[0][0][0]
+                a_score = predictions[1][0][0]
+                fused_score = predictions[2][0][0]
+                
                 status.update(label="Analysis Complete!", state="complete", expanded=False)
                 
                 st.divider()
                 
-                # Display Results
-                fake_probability = (1.0 - prediction) * 100
-                if fake_probability > 50.0:
-                    st.error(f"⚠️ High Probability of Manipulation: {fake_probability:.2f}%")
+                # 2. Convert raw scores to Fake Probabilities
+                v_fake_prob = (1.0 - v_score) * 100
+                a_fake_prob = (1.0 - a_score) * 100
+                fused_fake_prob = (1.0 - fused_score) * 100
+                
+                # 3. Calculate Modality Divergence (The Asymmetric Alert System)
+                divergence = abs(v_fake_prob - a_fake_prob)
+                
+                # Display a breakdown of what the AI "saw" vs what it "heard"
+                cols = st.columns(3)
+                cols[0].metric("👁️ Visual Fake %", f"{v_fake_prob:.1f}%")
+                cols[1].metric("👂 Audio Fake %", f"{a_fake_prob:.1f}%")
+                cols[2].metric("🧠 Fused Fake %", f"{fused_fake_prob:.1f}%")
+                
+                st.write("") # Spacer
+                
+                # 4. The Final Decision Logic
+                if divergence > 40.0: 
+                    # If the eyes and ears disagree by more than 40%, flag it!
+                    st.error(f"🚨 **ASYMMETRIC ATTACK DETECTED:** Severe modality conflict ({divergence:.1f}% divergence). Highly probable Voice Cloning over Real Video, or Vice Versa.")
+                elif fused_fake_prob > 50.0:
+                    st.warning(f"⚠️ **High Probability of Manipulation:** {fused_fake_prob:.2f}%")
                 else:
-                    st.success(f"✅ Content appears Authentic. (Fake Probability: {fake_probability:.2f}%)")
+                    st.success(f"✅ **Content appears Authentic:** {fused_fake_prob:.2f}% fake probability.")
 
+                # 5. Transparent Reasoning (Grad-CAM)
                 st.subheader("Transparent Reasoning (XAI)")
                 try:
+                    # Note: We pass [v_input, a_input] to the heatmap generator
                     real_heatmap = generate_gradcam_heatmap(detector, [v_input, a_input], 'block14_sepconv2_act')
                     display_results(video_features[0], real_heatmap)
                 except Exception as e:
-                    st.warning("Grad-CAM visualizer fallback.")
+                    st.warning("Grad-CAM visualizer fallback. (Requires casting updates for multi-output)")
                     mock_heatmap = np.random.rand(10, 10)
                     display_results(video_features[0], mock_heatmap)
             else:
                 status.update(label="Analysis Failed", state="error", expanded=False)
                 st.error("Could not detect a clear face or audio track in the uploaded video.")
-
 with tab2:
     st.header("The Architecture")
     st.markdown("""

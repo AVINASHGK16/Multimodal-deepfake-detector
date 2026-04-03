@@ -1,65 +1,53 @@
-import os
 import cv2
 import numpy as np
+from mtcnn import MTCNN
 
-# Load the cascade once globally
-cascade_path = os.path.join(
-    cv2.data.haarcascades, 
-    "haarcascade_frontalface_default.xml"
-)
-face_cascade = cv2.CascadeClassifier(cascade_path)
+# Initialize the detector once at the top of the file so it doesn't 
+# slow down your app by rebuilding the network for every single frame.
+detector = MTCNN()
 
-def extract_face_pipeline(video_path, max_frames=20):
+def extract_face_pipeline(video_path, max_frames=1):
     """
-    Extracts face regions from a video and returns them as an array.
-    max_frames: Limits the number of frames to process to keep it fast.
+    Phase 2 Upgrade: Uses MTCNN for highly robust face detection 
+    across various angles, poses, and lighting conditions.
     """
     cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError(f"Could not open video: {video_path}")
-
-    processed_faces = []
-
-    while cap.isOpened() and len(processed_faces) < max_frames:
+    extracted_faces = []
+    frame_count = 0
+    
+    while cap.isOpened() and len(extracted_faces) < max_frames:
         ret, frame = cap.read()
         if not ret:
             break
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+        # MTCNN mathematically requires RGB images, not OpenCV's default BGR
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Detect faces
-        faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=4)
-
-        for (x, y, w, h) in faces:
-            # Crop the face
-            face_roi = frame[y:y+h, x:x+w]
-            if face_roi.size == 0:
+        # 1. Detect faces using the neural network
+        results = detector.detect_faces(rgb_frame)
+        
+        if results:
+            # 2. Extract the bounding box of the most prominent face
+            # MTCNN returns a dictionary. 'box' gives [x, y, width, height]
+            x, y, w, h = results[0]['box']
+            
+            # Ensure coordinates don't go out of frame bounds (prevents slicing crashes)
+            x, y = max(0, x), max(0, y)
+            
+            # 3. Crop the face from the frame
+            face_crop = rgb_frame[y:y+h, x:x+w]
+            
+            # Safety check to ensure the crop didn't fail
+            if face_crop.size == 0:
                 continue
-
-            # Resize to Xception's required input size
-            resized_face = cv2.resize(face_roi, (299, 299))
+                
+            # 4. Resize to match the Xception network's required input (299x299)
+            face_resized = cv2.resize(face_crop, (299, 299))
             
-            # Convert BGR (OpenCV default) to RGB (Neural Network standard)
-            rgb_face = cv2.cvtColor(resized_face, cv2.COLOR_BGR2RGB)
+            # 5. Normalize pixel values to [0, 1] for stable neural network inference
+            face_normalized = face_resized / 255.0
             
-            processed_faces.append(rgb_face)
+            extracted_faces.append(face_normalized)
             
-            # Break after the first face is found per frame 
-            # (Assuming one speaker for now to keep it simple)
-            break 
-
     cap.release()
-    
-    # Return as a numpy array scaled between 0 and 1 for the neural network
-    return np.array(processed_faces) / 255.0
-
-# This block only runs if you execute `python video.py` directly.
-# It WON'T run when imported by `app.py`.
-if __name__ == "__main__":
-    # Test it with a video of a human face!
-    test_video = "human_speaking_test.mp4" 
-    if os.path.exists(test_video):
-        faces = extract_face_pipeline(test_video)
-        print(f"Successfully extracted {len(faces)} face frames. Shape: {faces.shape}")
-    else:
-        print(f"Please provide a valid human test video at {test_video}")
+    return extracted_faces
