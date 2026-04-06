@@ -1,9 +1,9 @@
 [theme]
-# A modern, high-contrast dark theme
-primaryColor = "#00F0FF" # Cyber-blue for buttons and highlights
-backgroundColor = "#0E1117" # Deep dark background
-secondaryBackgroundColor = "#1E212B" # Slightly lighter panels
-textColor = "#E0E0E0"
+base = "dark"
+primaryColor = "#22d3ee"
+backgroundColor = "#0f172a"
+secondaryBackgroundColor = "#1e293b"
+textColor = "#e2e8f0"
 font = "sans serif"
 
 [server]
