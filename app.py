@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from preprocess_video import extract_face_pipeline
 
 _ROOT_DIR = Path(__file__).resolve().parent
 _CSS_FILE = _ROOT_DIR / "assets" / "styles.css"
+_BG_FILE = _ROOT_DIR / "assets" / "bg.png"
 
 # Keep original project behavior: weights loaded from a single filename.
 _WEIGHTS_FILE = "dummy_phase2.weights.h5"
@@ -30,6 +32,26 @@ def apply_custom_css():
         extra_css = _CSS_FILE.read_text(encoding="utf-8")
     except OSError:
         extra_css = ""
+
+    # Streamlit doesn't serve arbitrary local files as static URLs, so we embed
+    # the background image as a data URL if present.
+    if _BG_FILE.exists():
+        try:
+            b64 = base64.b64encode(_BG_FILE.read_bytes()).decode("ascii")
+            extra_css += (
+                "\n\n/* Embedded background image */\n"
+                "[data-testid=\"stAppViewContainer\"] {\n"
+                "  background:\n"
+                "    linear-gradient(rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.78)),\n"
+                f"    url(\"data:image/png;base64,{b64}\");\n"
+                "  background-size: cover;\n"
+                "  background-position: center;\n"
+                "  background-repeat: no-repeat;\n"
+                "  background-attachment: fixed;\n"
+                "}\n"
+            )
+        except OSError:
+            pass
     css_js = json.dumps(extra_css)
     font_url = (
         "https://fonts.googleapis.com/css2?"
@@ -295,9 +317,7 @@ with tab3:
         </div>
         <div class="tab-section-title">&#128203; What this is</div>
         <p class="tab-intro" style="margin-bottom:1.1rem;">
-            A <strong style="color:#e2e8f0;">capstone-style prototype</strong> that scores short videos using
-            <strong style="color:#22d3ee;">vision + audio</strong> together. It is meant for learning and demos—not a
-            certified forensic tool.
+            A project for deepfake detection using <strong style="color:#3B82F6;">vision + audio</strong> together.
         </p>
         <div class="tab-section-title">&#9881;&#65039; Technology stack</div>
         <ul class="meta-list">
