@@ -57,11 +57,24 @@ def build_fusion_model():
     # 3. THE LATE FUSION ENGINE (The "Brain")
     # ==========================================
     # Concatenate the high-level features from both streams
+   # ==========================================
+    # 3. THE LATE FUSION ENGINE (The "Brain")
+    # ==========================================
+    # Concatenate the high-level features from both streams
     merged = Concatenate(name="fusion_concat")([v_features, a_features])
     
-    # Dense reasoning layers
-    x_fuse = Dense(256, activation='relu', name="fusion_dense_1")(merged)
+    # --- Attention Mechanism ---
+    # The network learns a set of weights (0.0 to 1.0) to decide which stream to trust
+    attention_probs = Dense(merged.shape[-1], activation='softmax', name='attention_weights')(merged)
+    # Multiply the merged features by their importance weights
+    context_vector = tf.keras.layers.Multiply()([merged, attention_probs])
+    
+    # Now feed the context_vector into your Dense reasoning layers instead of 'merged'
+    x_fuse = Dense(256, activation='relu', name="fusion_dense_1")(context_vector)
     x_fuse = Dropout(0.5, name="fusion_dropout")(x_fuse)
+    
+    # MAIN OUTPUT 3: The final fused decision
+    final_prediction = Dense(1, activation='sigmoid', name="fused_pred")(x_fuse)
     
     # MAIN OUTPUT 3: The final fused decision
     final_prediction = Dense(1, activation='sigmoid', name="fused_pred")(x_fuse)
