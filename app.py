@@ -1,6 +1,11 @@
 import base64
 import json
+import os
 from pathlib import Path
+
+# Enable legacy TF-Keras (Keras 2) for older `.h5` checkpoints saved under
+# TensorFlow 2.10-era Keras. This must be set before importing TensorFlow.
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 
 import cv2
 import numpy as np
@@ -15,10 +20,14 @@ from preprocess_video import extract_face_pipeline
 
 _ROOT_DIR = Path(__file__).resolve().parent
 _CSS_FILE = _ROOT_DIR / "assets" / "styles.css"
-_BG_FILE = _ROOT_DIR / "assets" / "bg.png"
+_BG_FILE = (
+    _ROOT_DIR / "assets" / "bg.jpg"
+    if (_ROOT_DIR / "assets" / "bg.jpg").exists()
+    else _ROOT_DIR / "assets" / "bg.png"
+)
 
 # Keep original project behavior: weights loaded from a single filename.
-_WEIGHTS_FILE = "dummy_phase2.weights.h5"
+_WEIGHTS_FILE = "best_model.h5"
 
 
 def apply_custom_css():
@@ -43,7 +52,7 @@ def apply_custom_css():
                 "[data-testid=\"stAppViewContainer\"] {\n"
                 "  background:\n"
                 "    linear-gradient(rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.78)),\n"
-                f"    url(\"data:image/png;base64,{b64}\");\n"
+                f"    url(\"data:image/jpeg;base64,{b64}\");\n"
                 "  background-size: cover;\n"
                 "  background-position: center;\n"
                 "  background-repeat: no-repeat;\n"
@@ -89,13 +98,20 @@ apply_custom_css()
 
 @st.cache_resource
 def load_detector_model():
+    # `best_model.h5` from training is saved as a full model by ModelCheckpoint.
+    # Prefer loading full model first, then fallback to weights-only loading.
+    try:
+        loaded = tf.keras.models.load_model(_WEIGHTS_FILE, compile=False)
+        return loaded
+    except Exception as e:
+        st.warning(f"Could not load saved model from '{_WEIGHTS_FILE}'. Error: {e}")
+
     model = build_fusion_model()
     try:
         model.load_weights(_WEIGHTS_FILE)
-        return model
     except Exception as e:
-        st.warning(f"Could not load weights. Error: {e}")
-        return model
+        st.warning(f"Could not load weights from '{_WEIGHTS_FILE}'. Error: {e}")
+    return model
 
 
 def display_results(original_img, heatmap):

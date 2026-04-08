@@ -50,7 +50,8 @@ def get_mel_spectrogram(video_path, sr=8000, n_mels=128, n_mfcc=20, max_time_ste
         
     except Exception as e:
         print(f"Audio extraction failed for {video_path}: {e}")
-        return None
+        # Fallback to silent features so inference can still continue.
+        return np.full((n_mels + n_mfcc, max_time_steps, 1), -80.0)
         
     finally:
         try:
