@@ -10,6 +10,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import GroupShuffleSplit
 
+from model_fusion import focal_loss
+
 
 # ──────────────────────────────────────────────────────────────
 # Identity extraction (must match training.py exactly)
@@ -23,29 +25,66 @@ def extract_identity(p):
 
 
 # ──────────────────────────────────────────────────────────────
-# Load + map dataset
+# Load FakeAVCeleb
+# ──────────────────────────────────────────────────────────────
+def load_fakeavceleb(video_map):
+    df = pd.read_csv('FakeAVCeleb/FakeAVCeleb/meta_data.csv')
+    df['label']     = df['type'].apply(lambda x: 1 if 'Fake' in x else 0)
+    df['full_path'] = df['path'].map(video_map)
+    df['source']    = 'fakeavceleb'
+    df = df.dropna(subset=['full_path']).reset_index(drop=True)
+    return df
+
+
+# ──────────────────────────────────────────────────────────────
+# Load VoxCeleb2 — flat folder
+# ──────────────────────────────────────────────────────────────
+def load_voxceleb2(vox_root, max_videos=4067):
+    rows = []
+    for filename in os.listdir(vox_root):
+        if not filename.endswith(".mp4"):
+            continue
+        full_path = os.path.join(vox_root, filename)
+        rows.append({
+            'path':      filename,
+            'full_path': full_path,
+            'type':      'RealVideo-RealAudio',
+            'label':     0,
+            'source':    'voxceleb2',
+        })
+
+    df = pd.DataFrame(rows)
+    if len(df) == 0:
+        print("⚠️  No VoxCeleb2 videos found — check VOX_ROOT path")
+        return df
+    if len(df) > max_videos:
+        df = df.sample(max_videos, random_state=42)
+    print(f"✅ VoxCeleb2 real videos loaded: {len(df)}")
+    return df.reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────
+# Rebuild dataset (must match training.py exactly)
 # ──────────────────────────────────────────────────────────────
 print("📂 Loading dataset...")
-df = pd.read_csv('FakeAVCeleb/FakeAVCeleb/meta_data.csv')
-df['label'] = df['type'].apply(lambda x: 1 if 'Fake' in x else 0)
 
+VOX_ROOT   = r"C:\Projects\VoxSample\downloads"
 VIDEO_ROOT = "FakeAVCeleb"
-video_map  = {}
+
+video_map = {}
 for root, dirs, files in os.walk(VIDEO_ROOT):
     for file in files:
         if file.endswith(".mp4"):
             video_map[file] = os.path.join(root, file)
 
-df['full_path'] = df['path'].map(video_map)
-df = df.dropna(subset=['full_path']).reset_index(drop=True)
+df_fav = load_fakeavceleb(video_map)
+df_vox = load_voxceleb2(VOX_ROOT, max_videos=2500)
 
-# ──────────────────────────────────────────────────────────────
-# 3:1 balancing (must match training.py exactly)
-# ──────────────────────────────────────────────────────────────
-real_df = df[df['label'] == 0]
-fake_df = df[df['label'] == 1]
+df = pd.concat([df_fav, df_vox], ignore_index=True)
 
-max_fake     = len(real_df) * 3
+real_df      = df[df['label'] == 0]
+fake_df      = df[df['label'] == 1]
+max_fake     = len(real_df) * 4
 fake_sampled = fake_df.sample(min(len(fake_df), max_fake), random_state=42)
 
 df_balanced = pd.concat([
@@ -55,11 +94,8 @@ df_balanced = pd.concat([
 
 real_count = len(df_balanced[df_balanced['label'] == 0])
 fake_count = len(df_balanced[df_balanced['label'] == 1])
-print(f"✅ Dataset: {len(df_balanced)} samples (real={real_count}, fake={fake_count})")
+print(f"✅ Balanced dataset: {len(df_balanced)} samples (real={real_count}, fake={fake_count})")
 
-# ──────────────────────────────────────────────────────────────
-# Identity-level split (must match training.py exactly)
-# ──────────────────────────────────────────────────────────────
 df_balanced['identity'] = df_balanced['path'].apply(extract_identity)
 
 gss = GroupShuffleSplit(test_size=0.2, random_state=42)
@@ -79,9 +115,14 @@ print(f"✅ Val fake types:\n{val_df['type'].value_counts()}\n")
 # Load model
 # ──────────────────────────────────────────────────────────────
 print("🧠 Loading best model...")
+fl = focal_loss(gamma=2.0, alpha=0.75)
+
 model = tf.keras.models.load_model(
     "best_model.h5",
-    custom_objects={'tf': tf},
+    custom_objects={
+        'tf':      tf,
+        'loss_fn': fl,
+    },
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -96,7 +137,7 @@ skipped     = 0
 
 for _, row in val_df.iterrows():
     filename   = os.path.basename(row['full_path'])
-    face_path  = os.path.join("processed_faces", filename.replace(".mp4", ".npy"))
+    face_path  = os.path.join("processed_faces",  filename.replace(".mp4", ".npy"))
     audio_path = os.path.join("processed_audio", filename.replace(".mp4", ".npy"))
 
     if not os.path.exists(face_path) or not os.path.exists(audio_path):
