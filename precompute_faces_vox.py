@@ -30,7 +30,7 @@ def process_video(args):
 if __name__ == "__main__":
 
     # ── Config ───────────────────────────────────────────────
-    VOX_ROOT    = r"C:\Projects\VoxSample\downloads"
+    VOX_ROOT    = r"C:\Projects\VoxSample\downloads" # Path to downloaded videos from VoxCeleb2
     SAVE_DIR    = "processed_faces"
     TIMEOUT_SEC = 15
 
