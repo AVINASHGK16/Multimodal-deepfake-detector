@@ -10,25 +10,30 @@ import tensorflow.keras.backend as K
 
 
 # ─────────────────────────────────────────
+# Focal Loss
+# ─────────────────────────────────────────
+# Designed for heavily imbalanced datasets.
+# Down-weights easy examples (abundant fakes the model already
+# classifies correctly) and focuses training on hard examples
+# (rare real samples and ambiguous cases).
+# alpha=0.75 gives extra weight to the minority class (real).
+# gamma=2.0 is the standard focusing parameter.
+
+def focal_loss(gamma=2.0, alpha=0.75):
+    def loss_fn(y_true, y_pred):
+        y_pred  = K.clip(y_pred, K.epsilon(), 1 - K.epsilon())
+        bce     = -y_true * K.log(y_pred) - (1 - y_true) * K.log(1 - y_pred)
+        p_t     = y_true * y_pred + (1 - y_true) * (1 - y_pred)
+        alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
+        focal   = alpha_t * K.pow(1 - p_t, gamma) * bce
+        return K.mean(focal)
+    return loss_fn
+
+
+# ─────────────────────────────────────────
 # Cross-modal attention gate
 # ─────────────────────────────────────────
-# Given two feature vectors v and a, this learns a soft gate
-# (a scalar per channel) that weights each modality based on
-# how informative it is for *this sample*. This is the key
-# fix for your audio branch being noisy: on samples where
-# audio is uninformative the gate suppresses it instead of
-# injecting noise into the fusion.
-
 def cross_modal_attention(v_features, a_features, projected_dim=256):
-    """
-    Produces a gated, attended concatenation of v and a.
-
-    Steps:
-      1. Project both to the same dimension so they're comparable.
-      2. Compute a gate vector from their concatenation via a 2-layer MLP.
-      3. Gate controls how much of each modality survives into fusion.
-      4. Return the weighted sum + original features (residual).
-    """
     # 1. Project to common dimension
     v_proj = Dense(projected_dim, activation='relu', name='v_proj')(v_features)
     v_proj = BatchNormalization(name='v_proj_bn')(v_proj)
@@ -38,12 +43,11 @@ def cross_modal_attention(v_features, a_features, projected_dim=256):
 
     # 2. Compute attention gate from both signals
     combined = Concatenate(name='gate_input')([v_proj, a_proj])
-
     gate = Dense(projected_dim * 2, activation='relu', name='gate_hidden')(combined)
     gate = Dropout(0.3)(gate)
     gate = Dense(projected_dim * 2, activation='sigmoid', name='gate_output')(gate)
 
-    # 3. Split gate into per-modality halves and apply
+    # 3. Split gate and apply
     v_gate, a_gate = tf.keras.layers.Lambda(
         lambda x: tf.split(x, 2, axis=-1), name='split_gate'
     )(gate)
@@ -51,21 +55,14 @@ def cross_modal_attention(v_features, a_features, projected_dim=256):
     v_gated = Multiply(name='v_gated')([v_proj, v_gate])
     a_gated = Multiply(name='a_gated')([a_proj, a_gate])
 
-    # 4. Concatenate gated projections (much cleaner signal than raw concat)
+    # 4. Concatenate gated projections
     attended = Concatenate(name='attended_features')([v_gated, a_gated])
-
     return attended
 
 
 # ─────────────────────────────────────────
-# Improved Audio CNN
+# Audio CNN
 # ─────────────────────────────────────────
-# Key changes vs your original:
-#   - Added a 4th conv block so the network has more capacity
-#   - Used SeparableConv2D in later blocks (more efficient, less overfit)
-#   - Doubled projection head to 256 (matches v_features projection dim)
-#   - Added residual-style skip so gradients flow even if a block collapses
-
 def build_audio_branch(a_input):
     # Block 1
     x = Conv2D(32, (3, 3), activation='relu', padding='same')(a_input)
@@ -89,7 +86,6 @@ def build_audio_branch(a_input):
     x = GlobalAveragePooling2D()(x)
     x = Dropout(0.4)(x)
 
-    # Two-layer projection head
     a_features = Dense(256, activation='relu')(x)
     a_features = BatchNormalization()(a_features)
     a_features = Dropout(0.3)(a_features)
@@ -100,14 +96,14 @@ def build_audio_branch(a_input):
 # ─────────────────────────────────────────
 # Main model builder
 # ─────────────────────────────────────────
-
 def build_fusion_model(freeze_xception=True):
     """
     Args:
         freeze_xception (bool):
-            True  → freeze all but last 30 layers (use for first ~3 epochs)
-            False → unfreeze everything with a very low lr (fine-tuning phase)
+            True  → freeze all but last 30 layers (phase 1)
+            False → unfreeze everything (phase 2)
     """
+    fl = focal_loss(gamma=2.0, alpha=0.75)
 
     # ── VISUAL BRANCH ──────────────────────────────
     v_input = Input(shape=(299, 299, 3), name="visual_input")
@@ -117,17 +113,15 @@ def build_fusion_model(freeze_xception=True):
     )
 
     if freeze_xception:
-        # Freeze all but last 30 layers
         for layer in xception_base.layers[:-30]:
             layer.trainable = False
         for layer in xception_base.layers[-30:]:
             layer.trainable = True
     else:
-        # Full fine-tune — use with lr ≤ 1e-5
         xception_base.trainable = True
 
-    x_vis = xception_base.output
-    v_features = GlobalAveragePooling2D()(x_vis)    # → [batch, 2048]
+    x_vis      = xception_base.output
+    v_features = GlobalAveragePooling2D()(x_vis)
     v_features = Dropout(0.5)(v_features)
 
     visual_prediction = Dense(
@@ -135,17 +129,15 @@ def build_fusion_model(freeze_xception=True):
     )(v_features)
 
     # ── AUDIO BRANCH ───────────────────────────────
-    a_input = Input(shape=(148, 128, 1), name="audio_input")
-    a_features = build_audio_branch(a_input)        # → [batch, 256]
+    a_input    = Input(shape=(148, 128, 1), name="audio_input")
+    a_features = build_audio_branch(a_input)
 
     audio_prediction = Dense(
         1, activation='sigmoid', name="audio_only_pred"
     )(a_features)
 
     # ── CROSS-MODAL ATTENTION + FUSION ─────────────
-    attended = cross_modal_attention(
-        v_features, a_features, projected_dim=256
-    )                                               # → [batch, 512]
+    attended = cross_modal_attention(v_features, a_features, projected_dim=256)
 
     x = Dense(512, activation='relu')(attended)
     x = BatchNormalization()(x)
@@ -163,25 +155,52 @@ def build_fusion_model(freeze_xception=True):
         1, activation='sigmoid', name="fused_pred"
     )(x)
 
-    # ── COMPILE ────────────────────────────────────
     model = Model(
         inputs=[v_input, a_input],
         outputs=[visual_prediction, audio_prediction, final_prediction]
     )
 
+    # ── COMPILE with focal loss ────────────────────
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
         loss={
-            "visual_only_pred": "binary_crossentropy",
-            "audio_only_pred":  "binary_crossentropy",
-            "fused_pred":       "binary_crossentropy",
+            "visual_only_pred": fl,
+            "audio_only_pred":  fl,
+            "fused_pred":       fl,
         },
         loss_weights={
             "visual_only_pred": 1.0,
-            "audio_only_pred":  0.3,   # lowered: audio is noisy early on
-            "fused_pred":       3.0,   # fused output is what we care about
+            "audio_only_pred":  0.3,
+            "fused_pred":       3.0,
         },
         metrics=["accuracy"]
     )
 
+    return model
+
+
+# ─────────────────────────────────────────
+# Helper: recompile with focal loss for phase 2
+# ─────────────────────────────────────────
+def recompile_for_phase2(model):
+    """Call this after unfreezing all layers for phase 2."""
+    fl = focal_loss(gamma=2.0, alpha=0.75)
+
+    for layer in model.layers:
+        layer.trainable = True
+
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5),
+        loss={
+            "visual_only_pred": fl,
+            "audio_only_pred":  fl,
+            "fused_pred":       fl,
+        },
+        loss_weights={
+            "visual_only_pred": 1.0,
+            "audio_only_pred":  0.3,
+            "fused_pred":       3.0,
+        },
+        metrics=["accuracy"],
+    )
     return model

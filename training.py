@@ -5,7 +5,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import GroupShuffleSplit
 
-from model_fusion import build_fusion_model
+from model_fusion import build_fusion_model, recompile_for_phase2
 from preprocess_video import augment_face
 from preprocess_audio import augment_spectrogram
 
@@ -59,9 +59,8 @@ class DataGenerator(tf.keras.utils.Sequence):
             v_batch, a_batch, y_batch = [], [], []
 
             for _, row in batch_df.iterrows():
-                video_path = row['full_path']
-                label      = row['label']
-                filename   = os.path.basename(video_path)
+                label    = row['label']
+                filename = os.path.basename(row['full_path'])
 
                 face_path  = os.path.join(
                     "processed_faces", filename.replace(".mp4", ".npy")
@@ -85,7 +84,6 @@ class DataGenerator(tf.keras.utils.Sequence):
                 if audio.shape != (148, 128, 1):
                     continue
 
-                # Apply augmentation during training only
                 if self.augment:
                     v_input = augment_face(v_input)
                     audio   = augment_spectrogram(audio)
@@ -113,33 +111,85 @@ class DataGenerator(tf.keras.utils.Sequence):
 
 
 # ──────────────────────────────────────────────────────────────
+# Load FakeAVCeleb
+# ──────────────────────────────────────────────────────────────
+def load_fakeavceleb(video_map):
+    df = pd.read_csv('FakeAVCeleb/FakeAVCeleb/meta_data.csv')
+    df['label']     = df['type'].apply(lambda x: 1 if 'Fake' in x else 0)
+    df['full_path'] = df['path'].map(video_map)
+    df['source']    = 'fakeavceleb'
+    df = df.dropna(subset=['full_path']).reset_index(drop=True)
+    return df
+
+
+# ──────────────────────────────────────────────────────────────
+# Load VoxCeleb2 — flat folder structure
+# Filenames: id00018_ewCKSXWitUk_143-151.mp4
+# ──────────────────────────────────────────────────────────────
+def load_voxceleb2(vox_root, max_videos=4067):
+    rows = []
+    for filename in os.listdir(vox_root):
+        if not filename.endswith(".mp4"):
+            continue
+        full_path = os.path.join(vox_root, filename)
+        rows.append({
+            'path':      filename,
+            'full_path': full_path,
+            'type':      'RealVideo-RealAudio',
+            'label':     0,
+            'source':    'voxceleb2',
+        })
+
+    df = pd.DataFrame(rows)
+
+    if len(df) == 0:
+        print("⚠️  No VoxCeleb2 videos found — check VOX_ROOT path")
+        return df
+
+    if len(df) > max_videos:
+        df = df.sample(max_videos, random_state=42)
+
+    print(f"✅ VoxCeleb2 real videos loaded: {len(df)}")
+    return df.reset_index(drop=True)
+
+
+# ──────────────────────────────────────────────────────────────
 # Training
 # ──────────────────────────────────────────────────────────────
 def run_training():
     print("🚀 Initialising training pipeline...")
 
-    print("📂 Loading dataset...")
-    df = pd.read_csv('FakeAVCeleb/FakeAVCeleb/meta_data.csv')
-    df['label'] = df['type'].apply(lambda x: 1 if 'Fake' in x else 0)
-
-    print("📂 Indexing video files...")
+    # ── Paths ────────────────────────────────────────────────
+    # Update VOX_ROOT once you move the folder into your project
+    VOX_ROOT   = r"C:\Projects\VoxSample\downloads"
     VIDEO_ROOT = "FakeAVCeleb"
-    video_map  = {}
+
+    # ── Index FakeAVCeleb videos ─────────────────────────────
+    print("📂 Indexing FakeAVCeleb video files...")
+    video_map = {}
     for root, dirs, files in os.walk(VIDEO_ROOT):
         for file in files:
             if file.endswith(".mp4"):
                 video_map[file] = os.path.join(root, file)
+    print(f"✅ FakeAVCeleb videos found: {len(video_map)}")
 
-    print(f"✅ Videos found on disk: {len(video_map)}")
+    # ── Load both datasets ───────────────────────────────────
+    df_fav = load_fakeavceleb(video_map)
+    df_vox = load_voxceleb2(VOX_ROOT, max_videos=2500)
 
-    df['full_path'] = df['path'].map(video_map)
-    df = df.dropna(subset=['full_path']).reset_index(drop=True)
+    df = pd.concat([df_fav, df_vox], ignore_index=True)
 
-    # ── 3:1 balancing — all real + cap fake at 3× real ──────
+    real_total = len(df[df['label'] == 0])
+    fake_total = len(df[df['label'] == 1])
+    print(f"✅ Merged dataset: {len(df)} samples (real={real_total}, fake={fake_total})")
+
+    # ── Balance: all real + 4× fake ─────────────────────────
     real_df      = df[df['label'] == 0]
     fake_df      = df[df['label'] == 1]
-    max_fake     = len(real_df) * 3
-    fake_sampled = fake_df.sample(min(len(fake_df), max_fake), random_state=42)
+    max_fake     = len(real_df) * 4
+    fake_sampled = fake_df.sample(
+        min(len(fake_df), max_fake), random_state=42
+    )
 
     df_balanced = pd.concat([
         real_df,
@@ -148,7 +198,7 @@ def run_training():
 
     real_count = len(df_balanced[df_balanced['label'] == 0])
     fake_count = len(df_balanced[df_balanced['label'] == 1])
-    print(f"✅ Dataset: {len(df_balanced)} samples (real={real_count}, fake={fake_count})")
+    print(f"✅ Balanced dataset: {len(df_balanced)} samples (real={real_count}, fake={fake_count})")
 
     # ── Identity-level split ─────────────────────────────────
     df_balanced['identity'] = df_balanced['path'].apply(extract_identity)
@@ -216,23 +266,7 @@ def run_training():
     # ════════════════════════════════════════════════════════
     print("\n🔥 Phase 2: end-to-end fine-tuning (all layers unfrozen)...")
 
-    for layer in model.layers:
-        layer.trainable = True
-
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(learning_rate=3e-5),
-        loss={
-            "visual_only_pred": "binary_crossentropy",
-            "audio_only_pred":  "binary_crossentropy",
-            "fused_pred":       "binary_crossentropy",
-        },
-        loss_weights={
-            "visual_only_pred": 1.0,
-            "audio_only_pred":  0.3,
-            "fused_pred":       3.0,
-        },
-        metrics=["accuracy"],
-    )
+    model = recompile_for_phase2(model)
 
     early_stop_p2 = tf.keras.callbacks.EarlyStopping(
         monitor='val_loss',
