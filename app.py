@@ -28,6 +28,79 @@ _BG_FILE = (
 
 # Keep original project behavior: weights loaded from a single filename.
 _WEIGHTS_FILE = "best_model.h5"
+_THRESHOLD_FILE = _ROOT_DIR / "model_threshold.json"
+_DEFAULT_FAKE_THRESHOLD = 0.5
+
+
+def extract_fallback_frame(video_path):
+    """Fallback face-like input when detector misses all faces."""
+    cap = cv2.VideoCapture(video_path)
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame is None or frame.size == 0:
+                continue
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            resized = cv2.resize(rgb, (299, 299))
+            return resized.astype("float32") / 255.0
+    finally:
+        cap.release()
+    return None
+
+
+def load_fake_threshold():
+    """Load tuned fake threshold from disk when available."""
+    try:
+        if _THRESHOLD_FILE.exists():
+            payload = json.loads(_THRESHOLD_FILE.read_text(encoding="utf-8"))
+            threshold = float(payload.get("best_threshold", _DEFAULT_FAKE_THRESHOLD))
+            return float(np.clip(threshold, 0.0, 1.0))
+    except Exception:
+        pass
+    return _DEFAULT_FAKE_THRESHOLD
+
+
+def preprocess_for_inference(video_path, strict_mode=False):
+    """
+    Align UI preprocessing with training/evaluation behavior.
+    - Visual: use up to 2 detected faces and average them (like precompute scripts).
+    - Audio: use extracted mel+mfcc tensor with deterministic shaping.
+    """
+    notices = []
+
+    faces = extract_face_pipeline(video_path, max_frames=2, frame_skip=5)
+    if len(faces) > 0:
+        visual = np.mean(np.array(faces, dtype=np.float32), axis=0)
+    else:
+        if strict_mode:
+            return None, None, notices
+        fallback_frame = extract_fallback_frame(video_path)
+        if fallback_frame is None:
+            return None, None, notices
+        visual = fallback_frame
+        notices.append("No clear face found. Using best available video frame fallback.")
+
+    audio = get_mel_spectrogram(video_path)
+    if audio is None:
+        if strict_mode:
+            return None, None, notices
+        audio = np.full((148, 128, 1), -80.0, dtype=np.float32)
+        notices.append("Audio extraction failed. Using silent-audio fallback.")
+
+    audio_2d = np.squeeze(audio)
+    target_time_steps = 128
+    current_time_steps = audio_2d.shape[1]
+    if current_time_steps < target_time_steps:
+        pad_width = target_time_steps - current_time_steps
+        audio_2d = np.pad(audio_2d, ((0, 0), (0, pad_width)), mode="constant")
+    else:
+        audio_2d = audio_2d[:, :target_time_steps]
+    audio = np.expand_dims(audio_2d, axis=-1).astype(np.float32)
+
+    return visual.astype(np.float32), audio, notices
 
 
 def apply_custom_css():
@@ -133,7 +206,7 @@ def display_results(original_img, heatmap):
         st.image(superimposed_rgb, caption="Grad-CAM overlay (XAI)", channels="RGB", use_container_width=True)
 
 
-def render_verdict(divergence, fused_fake_prob):
+def render_verdict(divergence, fused_fake_prob, fake_threshold_pct=50.0):
     if divergence > 40.0:
         st.markdown(
             f"""
@@ -145,7 +218,7 @@ def render_verdict(divergence, fused_fake_prob):
             """,
             unsafe_allow_html=True,
         )
-    elif fused_fake_prob > 50.0:
+    elif fused_fake_prob > fake_threshold_pct:
         st.markdown(
             f"""
             <div class="verdict verdict-warn">
@@ -198,6 +271,8 @@ tab1, tab2, tab3 = st.tabs(["Analyze", "How it works", "About"])
 with tab1:
     st.markdown('<div class="panel-label">Upload</div>', unsafe_allow_html=True)
     st.caption("MP4, MOV, or AVI — clear face and speech improve reliability.")
+    strict_mode = False
+    threshold = load_fake_threshold()
     uploaded_file = st.file_uploader(
         "Drop a file or browse",
         type=["mp4", "mov", "avi"],
@@ -211,27 +286,18 @@ with tab1:
 
         with st.status("Running analysis…", expanded=True) as status:
             st.write("Extracting face regions…")
-            video_features = extract_face_pipeline(video_path, max_frames=1)
-
             st.write("Building audio spectrogram…")
-            raw_audio_features = get_mel_spectrogram(video_path)
+            visual_features, audio_features, notices = preprocess_for_inference(
+                video_path,
+                strict_mode=strict_mode,
+            )
 
-            if len(video_features) > 0 and raw_audio_features is not None:
+            for notice in notices:
+                st.warning(notice)
+
+            if visual_features is not None and audio_features is not None:
                 st.write("Neural network inference…")
-
-                audio_2d = np.squeeze(raw_audio_features)
-                target_time_steps = 128
-                current_time_steps = audio_2d.shape[1]
-
-                if current_time_steps < target_time_steps:
-                    pad_width = target_time_steps - current_time_steps
-                    audio_features = np.pad(audio_2d, ((0, 0), (0, pad_width)), mode="constant")
-                else:
-                    audio_features = audio_2d[:, :target_time_steps]
-
-                audio_features = np.expand_dims(audio_features, axis=-1)
-
-                v_input = np.expand_dims(video_features[0], axis=0)
+                v_input = np.expand_dims(visual_features, axis=0)
                 a_input = np.expand_dims(audio_features, axis=0)
 
                 predictions = detector.predict([v_input, a_input])
@@ -242,9 +308,10 @@ with tab1:
                 status.update(label="Done", state="complete", expanded=False)
 
                 st.markdown('<div class="section-title">Scores</div>', unsafe_allow_html=True)
-                v_fake_prob = (1.0 - v_score) * 100
-                a_fake_prob = (1.0 - a_score) * 100
-                fused_fake_prob = (1.0 - fused_score) * 100
+                # Model is trained with label=1 as fake; sigmoid output is P(fake).
+                v_fake_prob = float(v_score) * 100.0
+                a_fake_prob = float(a_score) * 100.0
+                fused_fake_prob = float(fused_score) * 100.0
                 divergence = abs(v_fake_prob - a_fake_prob)
 
                 c1, c2, c3 = st.columns(3)
@@ -253,21 +320,34 @@ with tab1:
                 c3.metric("Fused (fake %)", f"{fused_fake_prob:.1f}%")
 
                 st.markdown('<div class="section-title">Assessment</div>', unsafe_allow_html=True)
-                render_verdict(divergence, fused_fake_prob)
+                if fused_score >= threshold:
+                    st.info(
+                        f"Classification: **Likely Fake** (fused={fused_score:.3f}, threshold={threshold:.2f})"
+                    )
+                else:
+                    st.info(
+                        f"Classification: **Likely Real** (fused={fused_score:.3f}, threshold={threshold:.2f})"
+                    )
+                render_verdict(divergence, fused_fake_prob, fake_threshold_pct=threshold * 100.0)
 
                 st.markdown('<div class="section-title">Explainability</div>', unsafe_allow_html=True)
                 try:
                     real_heatmap = generate_gradcam_heatmap(
                         detector, [v_input, a_input], "block14_sepconv2_act"
                     )
-                    display_results(video_features[0], real_heatmap)
+                    display_results(visual_features, real_heatmap)
                 except Exception:
                     st.warning("Grad-CAM used a fallback (multi-output model).")
                     mock_heatmap = np.random.rand(10, 10)
-                    display_results(video_features[0], mock_heatmap)
+                    display_results(visual_features, mock_heatmap)
             else:
                 status.update(label="Could not analyze", state="error", expanded=False)
-                st.error("Could not detect a clear face or audio track in the uploaded video.")
+                if strict_mode:
+                    st.error(
+                        "Strict mode could not extract both face and audio features from this video."
+                    )
+                else:
+                    st.error("Could not detect a clear face or audio track in the uploaded video.")
 
 with tab2:
     st.markdown(
@@ -297,7 +377,7 @@ with tab2:
                 <h4>Audio stream</h4>
                 <p>
                     Audio becomes a <strong style="color:#cbd5e1;">Mel-spectrogram</strong>. A CNN
-                    plus LSTM captures temporal quirks—unnatural rhythm, timbre, or robotic pauses.
+                    captures spectral and temporal patterns—unnatural rhythm, timbre, or robotic pauses.
                 </p>
             </div>
             <div class="info-card">
