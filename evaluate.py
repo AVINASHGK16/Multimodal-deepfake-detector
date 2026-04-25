@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -181,6 +182,16 @@ for thresh in np.arange(0.3, 0.75, 0.05):
         best_thresh = thresh
 
 print(f"\n✅ Best threshold: {best_thresh:.2f}  (F1={best_f1:.4f})")
+with open("model_threshold.json", "w", encoding="utf-8") as f:
+    json.dump(
+        {
+            "best_threshold": float(best_thresh),
+            "best_f1": float(best_f1),
+        },
+        f,
+        indent=2,
+    )
+print("💾 Saved model_threshold.json")
 
 # ──────────────────────────────────────────────────────────────
 # Final metrics
